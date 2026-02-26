@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# Virtual Environments
+backend/.env
+.venv/
+env/
+venv/
+
+# Poetry
+poetry.lock
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Node
+node_modules/
