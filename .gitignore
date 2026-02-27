@@ -23,3 +23,9 @@ poetry.lock
 
 # Node
 node_modules/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+dist/ build/
