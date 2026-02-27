@@ -23,6 +23,7 @@ async def test_agent_sees_only_assigned_leads(client: AsyncClient):
 
     r_create = await client.post("/leads", headers=auth_headers(agent_token), json=lead)
     assert r_create.status_code in (200, 201), r_create.text
+
     lead_id = r_create.json()["data"]["id"]
 
     r_get = await client.get(f"/leads/{lead_id}", headers=auth_headers(agent_token))
@@ -46,9 +47,11 @@ async def test_agent_cannot_view_unassigned_lead(client: AsyncClient):
         "coverage_type": "AUTO",
         "source": "TEST",
     }
+
     r_create = await client.post("/leads", headers=auth_headers(agent1_token), json=lead)
     assert r_create.status_code in (200, 201), r_create.text
+
     lead_id = r_create.json()["data"]["id"]
 
     r_get = await client.get(f"/leads/{lead_id}", headers=auth_headers(agent2_token))
-    assert r_get.status_code in (401, 403), r_get.text  # depending on your auth/forbidden handling
+    assert r_get.status_code in (401, 403), r_get.text

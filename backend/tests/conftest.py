@@ -1,27 +1,19 @@
 import sys
 from pathlib import Path
 
+import httpx
+import pytest
+
 # Ensure backend/ is importable so `import app` works
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
-import pytest
-import httpx
-
-from app.main import app
-from app.db import SessionLocal
-from app.models.user import User
-
-# ⚠️ Adjust this import if your hash function lives elsewhere
-from app.core.passwords import hash_password
-# If your project instead uses:
-# from app.core.security import get_password_hash
-# then replace hash_password(...) below with get_password_hash(...)
+from app.main import app  # noqa: E402
+from app.db import SessionLocal  # noqa: E402
+from app.models.user import User  # noqa: E402
+from app.core.passwords import hash_password  # noqa: E402
 
 
-# -------------------------------------------------------------------
-# Async test client
-# -------------------------------------------------------------------
 @pytest.fixture
 async def client():
     transport = httpx.ASGITransport(app=app)
@@ -29,23 +21,16 @@ async def client():
         yield ac
 
 
-# -------------------------------------------------------------------
-# Deterministic seeding
-# -------------------------------------------------------------------
 def seed_test_data(db):
     """
     Deterministic seed for RBAC tests.
-
-    - Always ensure admin1/manager1/agent1/agent2 exist with Passw0rd!
-    - Delete any leftover users created by tests (newagent1/newadmin) so reruns don't fail.
+    - Ensure admin1/manager1/agent1/agent2 exist with Passw0rd!
+    - Delete known test users so reruns don't fail.
     """
-
-    # Delete only known test usernames (safe + deterministic)
     usernames_to_reset = ["admin1", "manager1", "agent1", "agent2", "newagent1", "newadmin"]
     db.query(User).filter(User.username.in_(usernames_to_reset)).delete(synchronize_session=False)
     db.commit()
 
-    # Recreate required fixed users
     db.add_all(
         [
             User(
@@ -83,10 +68,6 @@ def seed_test_data(db):
 
 @pytest.fixture(autouse=True)
 def seed_users():
-    """
-    Runs before EVERY test automatically.
-    Guarantees admin1/manager1/agent1/agent2 exist with known password.
-    """
     db = SessionLocal()
     try:
         seed_test_data(db)
@@ -95,25 +76,15 @@ def seed_users():
         db.close()
 
 
-# -------------------------------------------------------------------
-# Auth helpers
-# -------------------------------------------------------------------
 async def login(client: httpx.AsyncClient, username: str, password: str) -> str:
-    resp = await client.post(
-        "/auth/login",
-        json={"username": username, "password": password},
-    )
+    resp = await client.post("/auth/login", json={"username": username, "password": password})
 
+    # Fallback if using OAuth2PasswordRequestForm
     if resp.status_code == 404:
-        # Fallback if using OAuth2PasswordRequestForm
-        resp = await client.post(
-            "/token",
-            data={"username": username, "password": password},
-        )
+        resp = await client.post("/token", data={"username": username, "password": password})
 
     assert resp.status_code == 200, resp.text
 
-    # If your API wraps data like: {"ok": true, "data": {...}}
     body = resp.json()
     if "access_token" in body:
         return body["access_token"]
