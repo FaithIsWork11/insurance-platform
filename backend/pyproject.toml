@@ -19,6 +19,7 @@ python-jose = {extras = ["cryptography"], version = "^3.5.0"}
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
 argon2-cffi = "^25.1.0"
 python-multipart = "^0.0.22"
+redis = "^7.2.1"
 
 
 [tool.poetry.group.dev.dependencies]

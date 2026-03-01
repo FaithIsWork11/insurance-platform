@@ -49,13 +49,12 @@ def register(
             raise AppError(code="AUTH_EMAIL_TAKEN", message="Email already exists", status_code=409)
 
     user = User(
-        id=str(uuid.uuid4()),
-        username=payload.username,
-        email=str(payload.email) if payload.email else None,
-        password_hash=hash_password(payload.password),
-        role=role,
-        is_active=True,
-    )
+    username=payload.username,
+    email=str(payload.email) if payload.email else None,
+    password_hash=hash_password(payload.password),
+    role=role,
+    is_active=True,
+)
     db.add(user)
     db.commit()
     db.refresh(user)
