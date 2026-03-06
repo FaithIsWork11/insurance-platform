@@ -10,6 +10,7 @@ from app.models.user import User
 from app.schemas.users import UserCreate, UserOut, ALLOWED_ROLES
 from app.core.passwords import hash_password, verify_password
 from app.core.security import create_access_token
+from app.core.audit import audit_event
 from app.core.app_error import AppError
 from app.core.response import ok
 
@@ -58,6 +59,16 @@ def register(
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    audit_event(
+    db,
+    actor_user_id=user.id,
+    action="AUTH_REGISTER_SUCCESS",
+    entity_type="user",
+    entity_id=str(user.id),
+    request_id=getattr(request.state, "request_id", None),
+)
+    db.commit()
 
     return ok(
         request=request,
