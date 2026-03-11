@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.app_error import AppError
 from app.core.response import ok, paged
 from app.core.security import require_role
+from app.core.audit import audit_event
 from app.db import get_db
 from app.models.lead import Lead
 from app.schemas.leads import AssignLeadRequest, LeadCreate, LeadOut, LeadUpdate
@@ -42,6 +43,17 @@ def create_lead(
         lead.assigned_to = user.get("sub")
 
     db.add(lead)
+    db.flush()
+
+    audit_event(
+    db,
+    actor_user_id=user.get("sub_uuid") or user.get("sub"),
+    action="LEADS_UPDATE",
+    entity_type="lead",
+    entity_id=str(lead.id),
+    request_id=getattr(request.state, "request_id", None),
+)
+
     db.commit()
     db.refresh(lead)
 
@@ -158,8 +170,10 @@ def update_lead(
 
     if payload.status is not None:
         lead.status = payload.status
+
     if payload.last_contacted_at is not None:
         lead.last_contacted_at = payload.last_contacted_at
+
     if payload.assigned_to is not None:
         if role not in {"manager", "admin"}:
             raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
@@ -168,11 +182,20 @@ def update_lead(
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
+
+    audit_event(
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="LEADS_UPDATE",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        request_id=getattr(request.state, "request_id", None),
+    )
+
     db.commit()
     db.refresh(lead)
 
     return ok(data=lead_dump(lead), request=request, meta={"resource": "leads"})
-
 
 @router.delete("/{lead_id}", status_code=status.HTTP_200_OK)
 def soft_delete_lead(
@@ -190,6 +213,15 @@ def soft_delete_lead(
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
+
+    audit_event(
+    db,
+    actor_user_id=user.get("sub_uuid") or user.get("sub"),
+    action="LEADS_SOFT_DELETE",
+    entity_type="lead",
+    entity_id=str(lead.id),
+    request_id=getattr(request.state, "request_id", None),
+)
     db.commit()
 
     return ok(
@@ -215,6 +247,15 @@ def restore_lead(
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
+    
+    audit_event(
+    db,
+    actor_user_id=user.get("sub_uuid") or user.get("sub"),
+    action="LEADS_RESTORE",
+    entity_type="lead",
+    entity_id=str(lead.id),
+    request_id=getattr(request.state, "request_id", None),
+)
     db.commit()
     db.refresh(lead)
 
@@ -237,6 +278,16 @@ def assign_lead(
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
+
+    audit_event(
+    db,
+    actor_user_id=user.get("sub_uuid") or user.get("sub"),
+    action="LEADS_ASSIGN",
+    entity_type="lead",
+    entity_id=str(lead.id),
+    request_id=getattr(request.state, "request_id", None),
+)
+
     db.commit()
     db.refresh(lead)
 
