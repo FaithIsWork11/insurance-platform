@@ -8,6 +8,7 @@ from app.core.security import require_role
 from app.core.app_error import AppError
 from app.core.passwords import hash_password
 from app.core.response import ok
+from app.core.audit import audit_event
 from app.models.user import User
 from app.schemas.users import UserCreate, UserOut, ALLOWED_ROLES
 
@@ -33,18 +34,29 @@ def admin_create_user(
 
     role = payload.role.strip().lower()
     if role not in ALLOWED_ROLES:
-        raise AppError(code="INVALID_ROLE", message="Invalid role", status_code=400)
+        raise AppError(
+            code="INVALID_ROLE",
+            message="Invalid role",
+            status_code=400,
+        )
 
     existing_username = db.query(User).filter(User.username == payload.username).first()
     if existing_username:
-        raise AppError(code="USERNAME_EXISTS", message="Username already exists", status_code=400)
+        raise AppError(
+            code="USERNAME_EXISTS",
+            message="Username already exists",
+            status_code=400,
+        )
 
     if payload.email is not None:
         existing_email = db.query(User).filter(User.email == str(payload.email)).first()
         if existing_email:
-            raise AppError(code="EMAIL_EXISTS", message="Email already exists", status_code=400)
+            raise AppError(
+                code="EMAIL_EXISTS",
+                message="Email already exists",
+                status_code=400,
+            )
 
-    # ✅ ENTERPRISE: DO NOT set id manually. Let ORM/DB generate UUID.
     user_obj = User(
         username=payload.username,
         email=str(payload.email) if payload.email is not None else None,
@@ -54,10 +66,20 @@ def admin_create_user(
     )
 
     db.add(user_obj)
+    db.flush()
+
+    audit_event(
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="USERS_CREATE",
+        entity_type="user",
+        entity_id=str(user_obj.id),
+        request_id=getattr(request.state, "request_id", None),
+    )
+
     db.commit()
     db.refresh(user_obj)
 
-    # Pydantic -> dict (UUID stays UUID), ok() encodes via jsonable_encoder (UUID safe)
     data = UserOut.model_validate(user_obj).model_dump()
     return ok(request=request, data=data)
 
@@ -86,34 +108,80 @@ def admin_list_users(
 
 
 @router.get("/{user_id}", dependencies=[Depends(require_role({"admin"}))])
-def admin_get_user(request: Request, user_id: str, db: Session = Depends(get_db)):
+def admin_get_user(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+):
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
-        raise AppError(code="USER_NOT_FOUND", message="User not found", status_code=404)
+        raise AppError(
+            code="USER_NOT_FOUND",
+            message="User not found",
+            status_code=404,
+        )
 
     return ok(request=request, data=UserOut.model_validate(u).model_dump())
 
 
-@router.patch("/{user_id}/disable", dependencies=[Depends(require_role({"admin"}))])
-def admin_disable_user(request: Request, user_id: str, db: Session = Depends(get_db)):
+@router.patch("/{user_id}/disable")
+def admin_disable_user(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(require_role({"admin"})),
+):
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
-        raise AppError(code="USER_NOT_FOUND", message="User not found", status_code=404)
+        raise AppError(
+            code="USER_NOT_FOUND",
+            message="User not found",
+            status_code=404,
+        )
 
     u.is_active = False
+
+    audit_event(
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="USERS_DISABLE",
+        entity_type="user",
+        entity_id=str(u.id),
+        request_id=getattr(request.state, "request_id", None),
+    )
+
     db.commit()
     db.refresh(u)
 
     return ok(request=request, data=UserOut.model_validate(u).model_dump())
 
 
-@router.patch("/{user_id}/enable", dependencies=[Depends(require_role({"admin"}))])
-def admin_enable_user(request: Request, user_id: str, db: Session = Depends(get_db)):
+@router.patch("/{user_id}/enable")
+def admin_enable_user(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(require_role({"admin"})),
+):
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
-        raise AppError(code="USER_NOT_FOUND", message="User not found", status_code=404)
+        raise AppError(
+            code="USER_NOT_FOUND",
+            message="User not found",
+            status_code=404,
+        )
 
     u.is_active = True
+
+    audit_event(
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="USERS_ENABLE",
+        entity_type="user",
+        entity_id=str(u.id),
+        request_id=getattr(request.state, "request_id", None),
+    )
+
     db.commit()
     db.refresh(u)
 
