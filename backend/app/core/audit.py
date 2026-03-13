@@ -1,8 +1,7 @@
-# backend/app/core/audit.py
 from __future__ import annotations
 
 import uuid
-from typing import Optional
+from typing import Optional, Any
 
 from sqlalchemy.orm import Session
 
@@ -17,10 +16,13 @@ def audit_event(
     entity_type: Optional[str] = None,
     entity_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    metadata_json: Optional[dict[str, Any]] = None,
+    ip_address: Optional[str] = None,
+    endpoint_path: Optional[str] = None,
+    http_method: Optional[str] = None,
 ) -> AuditLog:
     """
     Add an audit log row to the current SQLAlchemy session.
-
     This helper does NOT commit.
     The caller controls transaction boundaries.
     """
@@ -38,6 +40,10 @@ def audit_event(
         entity_type=entity_type,
         entity_id=entity_id,
         request_id=request_id,
+        metadata_json=metadata_json,
+        ip_address=ip_address,
+        endpoint_path=endpoint_path,
+        http_method=http_method,
     )
     db.add(row)
     db.flush()

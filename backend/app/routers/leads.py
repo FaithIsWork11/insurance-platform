@@ -11,6 +11,7 @@ from app.core.app_error import AppError
 from app.core.response import ok, paged
 from app.core.security import require_role
 from app.core.audit import audit_event
+from app.core.audit_context import build_audit_context
 from app.db import get_db
 from app.models.lead import Lead
 from app.schemas.leads import AssignLeadRequest, LeadCreate, LeadOut, LeadUpdate
@@ -21,7 +22,6 @@ VALID_STATUSES = {"NEW", "CONTACTED", "QUALIFIED", "TRANSFERRED", "CLOSED"}
 
 
 def lead_dump(lead: Lead) -> dict:
-    # UUID-safe JSON output
     return LeadOut.model_validate(lead).model_dump(mode="json")
 
 
@@ -38,21 +38,29 @@ def create_lead(
 ):
     lead = Lead(**payload.model_dump())
 
-    # Agents can only create leads assigned to themselves (sub is user-id string)
     if user.get("role") == "agent":
         lead.assigned_to = user.get("sub")
 
     db.add(lead)
     db.flush()
 
+    ctx = build_audit_context(request)
+
     audit_event(
-    db,
-    actor_user_id=user.get("sub_uuid") or user.get("sub"),
-    action="LEADS_UPDATE",
-    entity_type="lead",
-    entity_id=str(lead.id),
-    request_id=getattr(request.state, "request_id", None),
-)
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="LEADS_CREATE",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        request_id=ctx["request_id"],
+        ip_address=ctx["ip_address"],
+        endpoint_path=ctx["endpoint_path"],
+        http_method=ctx["http_method"],
+        metadata_json={
+            "status": lead.status,
+            "assigned_to": lead.assigned_to,
+        },
+    )
 
     db.commit()
     db.refresh(lead)
@@ -78,11 +86,9 @@ def list_leads(
     role = user.get("role")
     sub = user.get("sub")
 
-    # Agents can only see their own assigned leads
     if role == "agent":
         base_filter.append(Lead.assigned_to == sub)
 
-    # Soft delete filter
     if not include_deleted:
         base_filter.append(Lead.is_deleted.is_(False))
 
@@ -154,14 +160,16 @@ def update_lead(
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
+    old_status = lead.status
+    old_assigned_to = lead.assigned_to
+    old_last_contacted_at = lead.last_contacted_at
+
     role = user.get("role")
     sub = user.get("sub")
 
-    # Agent can only update their own assigned leads
     if role == "agent" and lead.assigned_to != sub:
         raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
 
-    # Agent cannot reassign
     if role == "agent" and payload.assigned_to is not None:
         raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
 
@@ -183,19 +191,37 @@ def update_lead(
 
     db.add(lead)
 
+    ctx = build_audit_context(request)
+
     audit_event(
         db,
         actor_user_id=user.get("sub_uuid") or user.get("sub"),
         action="LEADS_UPDATE",
         entity_type="lead",
         entity_id=str(lead.id),
-        request_id=getattr(request.state, "request_id", None),
+        request_id=ctx["request_id"],
+        ip_address=ctx["ip_address"],
+        endpoint_path=ctx["endpoint_path"],
+        http_method=ctx["http_method"],
+        metadata_json={
+            "old_status": old_status,
+            "new_status": lead.status,
+            "old_assigned_to": old_assigned_to,
+            "new_assigned_to": lead.assigned_to,
+            "old_last_contacted_at": (
+                old_last_contacted_at.isoformat() if old_last_contacted_at else None
+            ),
+            "new_last_contacted_at": (
+                lead.last_contacted_at.isoformat() if lead.last_contacted_at else None
+            ),
+        },
     )
 
     db.commit()
     db.refresh(lead)
 
     return ok(data=lead_dump(lead), request=request, meta={"resource": "leads"})
+
 
 @router.delete("/{lead_id}", status_code=status.HTTP_200_OK)
 def soft_delete_lead(
@@ -214,14 +240,24 @@ def soft_delete_lead(
 
     db.add(lead)
 
+    ctx = build_audit_context(request)
+
     audit_event(
-    db,
-    actor_user_id=user.get("sub_uuid") or user.get("sub"),
-    action="LEADS_SOFT_DELETE",
-    entity_type="lead",
-    entity_id=str(lead.id),
-    request_id=getattr(request.state, "request_id", None),
-)
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="LEADS_SOFT_DELETE",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        request_id=ctx["request_id"],
+        ip_address=ctx["ip_address"],
+        endpoint_path=ctx["endpoint_path"],
+        http_method=ctx["http_method"],
+        metadata_json={
+            "previous_deleted_state": False,
+            "new_deleted_state": True,
+        },
+    )
+
     db.commit()
 
     return ok(
@@ -229,7 +265,6 @@ def soft_delete_lead(
         request=request,
         meta={"resource": "leads"},
     )
-
 
 @router.post("/{lead_id}/restore", status_code=status.HTTP_200_OK)
 def restore_lead(
@@ -247,20 +282,29 @@ def restore_lead(
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
-    
+
+    ctx = build_audit_context(request)
+
     audit_event(
-    db,
-    actor_user_id=user.get("sub_uuid") or user.get("sub"),
-    action="LEADS_RESTORE",
-    entity_type="lead",
-    entity_id=str(lead.id),
-    request_id=getattr(request.state, "request_id", None),
-)
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="LEADS_RESTORE",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        request_id=ctx["request_id"],
+        ip_address=ctx["ip_address"],
+        endpoint_path=ctx["endpoint_path"],
+        http_method=ctx["http_method"],
+        metadata_json={
+            "previous_deleted_state": True,
+            "new_deleted_state": False,
+        },
+    )
+
     db.commit()
     db.refresh(lead)
 
     return ok(data=lead_dump(lead), request=request, meta={"resource": "leads"})
-
 
 @router.post("/{lead_id}/assign", status_code=status.HTTP_200_OK)
 def assign_lead(
@@ -274,19 +318,30 @@ def assign_lead(
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
+    old_assigned_to = lead.assigned_to
+
     lead.assigned_to = payload.assigned_to
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
 
+    ctx = build_audit_context(request)
+
     audit_event(
-    db,
-    actor_user_id=user.get("sub_uuid") or user.get("sub"),
-    action="LEADS_ASSIGN",
-    entity_type="lead",
-    entity_id=str(lead.id),
-    request_id=getattr(request.state, "request_id", None),
-)
+        db,
+        actor_user_id=user.get("sub_uuid") or user.get("sub"),
+        action="LEADS_ASSIGN",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        request_id=ctx["request_id"],
+        ip_address=ctx["ip_address"],
+        endpoint_path=ctx["endpoint_path"],
+        http_method=ctx["http_method"],
+        metadata_json={
+            "old_assigned_to": old_assigned_to,
+            "new_assigned_to": payload.assigned_to,
+        },
+    )
 
     db.commit()
     db.refresh(lead)

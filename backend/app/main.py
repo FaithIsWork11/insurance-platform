@@ -14,6 +14,7 @@ from app.core.app_error import AppError
 from app.routers.auth import router as auth_router
 from app.routers.users import router as users_router
 from app.routers.leads import router as leads_router
+from app.routers.audit_logs import router as audit_logs_router
 from app.core.request_id import RequestIdMiddleware
 from app.core.response import ok
 
@@ -133,8 +134,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(leads_router)
-
-
+app.include_router(audit_logs_router)
 # -----------------------------
 # Health / Root
 # -----------------------------
