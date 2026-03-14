@@ -20,6 +20,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class LoginIn(BaseModel):
     username: str
     password: str
+    
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 @router.post("/register")
@@ -99,47 +104,25 @@ def register(
 
 
 @router.post("/login")
-async def login(request: Request, db: Session = Depends(get_db)):
-    """
-    Enterprise login: accepts BOTH JSON and form data.
-    """
-
-    content_type = (request.headers.get("content-type") or "").lower()
-
-    username: str | None = None
-    password: str | None = None
-
-    if "application/json" in content_type:
-        body = await request.json()
-        if isinstance(body, dict):
-            username = body.get("username")
-            password = body.get("password")
-    else:
-        form = await request.form()
-        username = form.get("username")
-        password = form.get("password")
-
-    if not username or not password:
-        raise AppError(
-            code="VALIDATION_ERROR",
-            message="username and password are required",
-            status_code=422,
-            fields={"username": "required", "password": "required"},
-        )
+def login(
+    payload: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    username = payload.username
+    password = payload.password
 
     user = db.execute(
         select(User).where(User.username == username)
     ).scalar_one_or_none()
 
     if not user or not verify_password(password, user.password_hash):
-
         audit_event(
             db,
             action="AUTH_LOGIN_FAILURE",
             entity_type="user",
             request_id=getattr(request.state, "request_id", None),
         )
-
         db.commit()
 
         raise AppError(
@@ -174,7 +157,6 @@ async def login(request: Request, db: Session = Depends(get_db)):
         meta_extra={"resource": "auth"},
         flatten_keys=["access_token", "token_type"],
     )
-
 
 # OAuth2-compatible token endpoint
 @router.post("/token")

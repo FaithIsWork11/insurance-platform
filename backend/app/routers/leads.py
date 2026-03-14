@@ -2,23 +2,25 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import List
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.app_error import AppError
+from app.core.audit import audit_event
 from app.core.response import ok, paged
 from app.core.security import require_role
-from app.core.audit import audit_event
-from app.core.audit_context import build_audit_context
 from app.db import get_db
 from app.models.lead import Lead
+from app.models.user import User
 from app.schemas.leads import AssignLeadRequest, LeadCreate, LeadOut, LeadUpdate
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 VALID_STATUSES = {"NEW", "CONTACTED", "QUALIFIED", "TRANSFERRED", "CLOSED"}
+ALLOWED_ASSIGNEE_ROLES = {"agent", "manager"}
 
 
 def lead_dump(lead: Lead) -> dict:
@@ -27,6 +29,68 @@ def lead_dump(lead: Lead) -> dict:
 
 def leads_dump(leads: List[Lead]) -> List[dict]:
     return [lead_dump(l) for l in leads]
+
+
+def _normalize_uuid_value(value: str | UUID | None) -> UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError):
+        raise AppError(
+            code="LEADS_INVALID_ASSIGNEE",
+            message="assigned_to_user_id must be a valid UUID",
+            status_code=400,
+        )
+
+
+def _get_valid_assignee(db: Session, assigned_to_user_id: str | UUID | None) -> User | None:
+    normalized = _normalize_uuid_value(assigned_to_user_id)
+    if normalized is None:
+        return None
+
+    assignee = db.execute(
+        select(User).where(User.id == normalized)
+    ).scalar_one_or_none()
+
+    if not assignee:
+        raise AppError(
+            code="LEADS_ASSIGNEE_NOT_FOUND",
+            message="Assigned user does not exist",
+            status_code=404,
+        )
+
+    if not assignee.is_active:
+        raise AppError(
+            code="LEADS_ASSIGNEE_INACTIVE",
+            message="Assigned user is inactive",
+            status_code=400,
+        )
+
+    role = (assignee.role or "").strip().lower()
+    if role not in ALLOWED_ASSIGNEE_ROLES:
+        raise AppError(
+            code="LEADS_ASSIGNEE_INVALID_ROLE",
+            message="Lead can only be assigned to an agent or manager",
+            status_code=400,
+        )
+
+    return assignee
+
+
+def _require_lead_access(user: dict, lead: Lead) -> None:
+    role = user.get("role")
+    sub = user.get("sub")
+
+    if role == "agent":
+        if lead.assigned_to_user_id is None or str(lead.assigned_to_user_id) != str(sub):
+            raise AppError(
+                code="LEADS_FORBIDDEN",
+                message="Forbidden",
+                status_code=403,
+            )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -39,12 +103,11 @@ def create_lead(
     lead = Lead(**payload.model_dump())
 
     if user.get("role") == "agent":
-        lead.assigned_to = user.get("sub")
+        user_uuid = _normalize_uuid_value(user.get("sub"))
+        lead.assigned_to_user_id = user_uuid
 
     db.add(lead)
     db.flush()
-
-    ctx = build_audit_context(request)
 
     audit_event(
         db,
@@ -52,13 +115,10 @@ def create_lead(
         action="LEADS_CREATE",
         entity_type="lead",
         entity_id=str(lead.id),
-        request_id=ctx["request_id"],
-        ip_address=ctx["ip_address"],
-        endpoint_path=ctx["endpoint_path"],
-        http_method=ctx["http_method"],
-        metadata_json={
+        request_id=getattr(request.state, "request_id", None),
+        metadata={
+            "assigned_to_user_id": str(lead.assigned_to_user_id) if lead.assigned_to_user_id else None,
             "status": lead.status,
-            "assigned_to": lead.assigned_to,
         },
     )
 
@@ -78,7 +138,11 @@ def list_leads(
     user=Depends(require_role({"agent", "manager", "admin"})),
 ):
     if include_deleted and user.get("role") != "admin":
-        raise AppError(code="LEADS_INCLUDE_DELETED_FORBIDDEN", message="Forbidden", status_code=403)
+        raise AppError(
+            code="LEADS_INCLUDE_DELETED_FORBIDDEN",
+            message="Forbidden",
+            status_code=403,
+        )
 
     offset = (page - 1) * page_size
     base_filter = []
@@ -87,12 +151,15 @@ def list_leads(
     sub = user.get("sub")
 
     if role == "agent":
-        base_filter.append(Lead.assigned_to == sub)
+        user_uuid = _normalize_uuid_value(sub)
+        base_filter.append(Lead.assigned_to_user_id == user_uuid)
 
     if not include_deleted:
         base_filter.append(Lead.is_deleted.is_(False))
 
-    total = db.execute(select(func.count()).select_from(Lead).where(*base_filter)).scalar_one()
+    total = db.execute(
+        select(func.count()).select_from(Lead).where(*base_filter)
+    ).scalar_one()
 
     leads = (
         db.execute(
@@ -126,7 +193,11 @@ def get_lead(
     user=Depends(require_role({"agent", "manager", "admin"})),
 ):
     if include_deleted and user.get("role") != "admin":
-        raise AppError(code="LEADS_INCLUDE_DELETED_FORBIDDEN", message="Forbidden", status_code=403)
+        raise AppError(
+            code="LEADS_INCLUDE_DELETED_FORBIDDEN",
+            message="Forbidden",
+            status_code=403,
+        )
 
     lead = db.get(Lead, lead_id)
     if not lead:
@@ -135,11 +206,7 @@ def get_lead(
     if (not include_deleted) and lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
-    role = user.get("role")
-    sub = user.get("sub")
-
-    if role == "agent" and lead.assigned_to != sub:
-        raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
+    _require_lead_access(user, lead)
 
     return ok(
         data=lead_dump(lead),
@@ -160,21 +227,19 @@ def update_lead(
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
-    old_status = lead.status
-    old_assigned_to = lead.assigned_to
-    old_last_contacted_at = lead.last_contacted_at
+    _require_lead_access(user, lead)
 
     role = user.get("role")
-    sub = user.get("sub")
-
-    if role == "agent" and lead.assigned_to != sub:
-        raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
-
-    if role == "agent" and payload.assigned_to is not None:
-        raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
 
     if payload.status is not None and payload.status not in VALID_STATUSES:
-        raise AppError(code="LEADS_INVALID_STATUS", message="Invalid status", status_code=400)
+        raise AppError(
+            code="LEADS_INVALID_STATUS",
+            message="Invalid status",
+            status_code=400,
+        )
+
+    old_status = lead.status
+    old_assigned_to_user_id = lead.assigned_to_user_id
 
     if payload.status is not None:
         lead.status = payload.status
@@ -182,16 +247,19 @@ def update_lead(
     if payload.last_contacted_at is not None:
         lead.last_contacted_at = payload.last_contacted_at
 
-    if payload.assigned_to is not None:
+    if payload.assigned_to_user_id is not None:
         if role not in {"manager", "admin"}:
-            raise AppError(code="LEADS_FORBIDDEN", message="Forbidden", status_code=403)
-        lead.assigned_to = payload.assigned_to
+            raise AppError(
+                code="LEADS_FORBIDDEN",
+                message="Forbidden",
+                status_code=403,
+            )
+
+        assignee = _get_valid_assignee(db, payload.assigned_to_user_id)
+        lead.assigned_to_user_id = assignee.id
 
     lead.updated_at = datetime.now(timezone.utc)
-
     db.add(lead)
-
-    ctx = build_audit_context(request)
 
     audit_event(
         db,
@@ -199,21 +267,12 @@ def update_lead(
         action="LEADS_UPDATE",
         entity_type="lead",
         entity_id=str(lead.id),
-        request_id=ctx["request_id"],
-        ip_address=ctx["ip_address"],
-        endpoint_path=ctx["endpoint_path"],
-        http_method=ctx["http_method"],
-        metadata_json={
+        request_id=getattr(request.state, "request_id", None),
+        metadata={
             "old_status": old_status,
             "new_status": lead.status,
-            "old_assigned_to": old_assigned_to,
-            "new_assigned_to": lead.assigned_to,
-            "old_last_contacted_at": (
-                old_last_contacted_at.isoformat() if old_last_contacted_at else None
-            ),
-            "new_last_contacted_at": (
-                lead.last_contacted_at.isoformat() if lead.last_contacted_at else None
-            ),
+            "old_assigned_to_user_id": str(old_assigned_to_user_id) if old_assigned_to_user_id else None,
+            "new_assigned_to_user_id": str(lead.assigned_to_user_id) if lead.assigned_to_user_id else None,
         },
     )
 
@@ -237,10 +296,7 @@ def soft_delete_lead(
     lead.is_deleted = True
     lead.deleted_at = datetime.now(timezone.utc)
     lead.updated_at = datetime.now(timezone.utc)
-
     db.add(lead)
-
-    ctx = build_audit_context(request)
 
     audit_event(
         db,
@@ -248,14 +304,8 @@ def soft_delete_lead(
         action="LEADS_SOFT_DELETE",
         entity_type="lead",
         entity_id=str(lead.id),
-        request_id=ctx["request_id"],
-        ip_address=ctx["ip_address"],
-        endpoint_path=ctx["endpoint_path"],
-        http_method=ctx["http_method"],
-        metadata_json={
-            "previous_deleted_state": False,
-            "new_deleted_state": True,
-        },
+        request_id=getattr(request.state, "request_id", None),
+        metadata={"deleted": True},
     )
 
     db.commit()
@@ -265,6 +315,7 @@ def soft_delete_lead(
         request=request,
         meta={"resource": "leads"},
     )
+
 
 @router.post("/{lead_id}/restore", status_code=status.HTTP_200_OK)
 def restore_lead(
@@ -280,10 +331,7 @@ def restore_lead(
     lead.is_deleted = False
     lead.deleted_at = None
     lead.updated_at = datetime.now(timezone.utc)
-
     db.add(lead)
-
-    ctx = build_audit_context(request)
 
     audit_event(
         db,
@@ -291,20 +339,15 @@ def restore_lead(
         action="LEADS_RESTORE",
         entity_type="lead",
         entity_id=str(lead.id),
-        request_id=ctx["request_id"],
-        ip_address=ctx["ip_address"],
-        endpoint_path=ctx["endpoint_path"],
-        http_method=ctx["http_method"],
-        metadata_json={
-            "previous_deleted_state": True,
-            "new_deleted_state": False,
-        },
+        request_id=getattr(request.state, "request_id", None),
+        metadata={"restored": True},
     )
 
     db.commit()
     db.refresh(lead)
 
     return ok(data=lead_dump(lead), request=request, meta={"resource": "leads"})
+
 
 @router.post("/{lead_id}/assign", status_code=status.HTTP_200_OK)
 def assign_lead(
@@ -318,30 +361,32 @@ def assign_lead(
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
-    old_assigned_to = lead.assigned_to
+    assignee = _get_valid_assignee(db, payload.assigned_to_user_id)
 
-    lead.assigned_to = payload.assigned_to
+    old_assigned_to_user_id = lead.assigned_to_user_id
+    old_status = lead.status
+
+    lead.assigned_to_user_id = assignee.id
     lead.updated_at = datetime.now(timezone.utc)
 
     db.add(lead)
 
-    ctx = build_audit_context(request)
-
     audit_event(
-        db,
-        actor_user_id=user.get("sub_uuid") or user.get("sub"),
-        action="LEADS_ASSIGN",
-        entity_type="lead",
-        entity_id=str(lead.id),
-        request_id=ctx["request_id"],
-        ip_address=ctx["ip_address"],
-        endpoint_path=ctx["endpoint_path"],
-        http_method=ctx["http_method"],
-        metadata_json={
-            "old_assigned_to": old_assigned_to,
-            "new_assigned_to": payload.assigned_to,
-        },
-    )
+    db,
+    actor_user_id=user.get("sub_uuid") or user.get("sub"),
+    action="LEADS_ASSIGN",
+    entity_type="lead",
+    entity_id=str(lead.id),
+    request_id=getattr(request.state, "request_id", None),
+    metadata_json={
+        "old_assigned_to_user_id": str(old_assigned_to_user_id) if old_assigned_to_user_id else None,
+        "new_assigned_to_user_id": str(lead.assigned_to_user_id) if lead.assigned_to_user_id else None,
+        "old_status": old_status,
+        "new_status": lead.status,
+        "assignee_role": assignee.role,
+        "assignee_username": assignee.username,
+    },
+)
 
     db.commit()
     db.refresh(lead)

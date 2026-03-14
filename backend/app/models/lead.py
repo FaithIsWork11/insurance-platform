@@ -1,10 +1,9 @@
-# app/models/lead.py
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, func, Boolean, text
+from sqlalchemy import String, DateTime, func, Boolean, text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -12,9 +11,6 @@ from app.db import Base
 class Lead(Base):
     __tablename__ = "leads"
 
-    # Enterprise UUID primary key:
-    # - ORM default: uuid.uuid4
-    # - DB default: gen_random_uuid() (pgcrypto)
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
@@ -47,10 +43,9 @@ class Lead(Base):
         server_default="NEW",
     )
 
-    # NOTE (enterprise): this should eventually become assigned_to_user_id: UUID FK -> users.id
-    # For now leaving as-is per your current schema.
-    assigned_to: Mapped[str | None] = mapped_column(
-        String(100),
+    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -66,7 +61,6 @@ class Lead(Base):
         nullable=True,
     )
 
-    # ---- Soft delete (enterprise) ----
     is_deleted: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -77,3 +71,5 @@ class Lead(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+    assigned_user = relationship("User", foreign_keys=[assigned_to_user_id])

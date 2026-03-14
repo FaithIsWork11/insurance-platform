@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Any
+from typing import Any, Optional
 
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
+
+
+def build_audit_context(request: Request) -> dict[str, Optional[str]]:
+    """
+    Build common request context fields for audit logging.
+    """
+    return {
+        "request_id": getattr(request.state, "request_id", None),
+        "ip_address": getattr(request.client, "host", None) if request.client else None,
+        "endpoint_path": str(request.url.path),
+        "http_method": request.method,
+    }
 
 
 def audit_event(
@@ -23,6 +36,7 @@ def audit_event(
 ) -> AuditLog:
     """
     Add an audit log row to the current SQLAlchemy session.
+
     This helper does NOT commit.
     The caller controls transaction boundaries.
     """
@@ -45,6 +59,7 @@ def audit_event(
         endpoint_path=endpoint_path,
         http_method=http_method,
     )
+
     db.add(row)
     db.flush()
     return row
