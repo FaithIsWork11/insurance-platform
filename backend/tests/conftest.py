@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import pytest_asyncio
 
 # Ensure backend/ is importable so `import app` works
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -14,7 +15,7 @@ from app.models.user import User  # noqa: E402
 from app.core.passwords import hash_password  # noqa: E402
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -79,7 +80,6 @@ def seed_users():
 async def login(client: httpx.AsyncClient, username: str, password: str) -> str:
     resp = await client.post("/auth/login", json={"username": username, "password": password})
 
-    # Fallback if using OAuth2PasswordRequestForm
     if resp.status_code == 404:
         resp = await client.post("/token", data={"username": username, "password": password})
 
