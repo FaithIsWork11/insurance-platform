@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session
 
@@ -20,7 +22,11 @@ def create_lead(
     user=Depends(require_role({"agent", "manager", "admin"})),
 ):
     lead = leads_service.create_lead(db=db, payload=payload, user=user, request=request)
-    return ok(data=LeadOut.model_validate(lead).model_dump(mode="json"), request=request, meta={"resource": "leads"})
+    return ok(
+        data=LeadOut.model_validate(lead).model_dump(mode="json"),
+        request=request,
+        meta={"resource": "leads"},
+    )
 
 
 @router.get("", status_code=status.HTTP_200_OK)
@@ -54,7 +60,7 @@ def list_leads(
 @router.get("/{lead_id}", status_code=status.HTTP_200_OK)
 def get_lead(
     request: Request,
-    lead_id: str,
+    lead_id: uuid.UUID,
     db: Session = Depends(get_db),
     include_deleted: bool = Query(False),
     user=Depends(require_role({"agent", "manager", "admin"})),
@@ -75,7 +81,7 @@ def get_lead(
 @router.patch("/{lead_id}", status_code=status.HTTP_200_OK)
 def update_lead(
     request: Request,
-    lead_id: str,
+    lead_id: uuid.UUID,
     payload: LeadUpdate,
     db: Session = Depends(get_db),
     user=Depends(require_role({"agent", "manager", "admin"})),
@@ -87,13 +93,17 @@ def update_lead(
         user=user,
         request=request,
     )
-    return ok(data=LeadOut.model_validate(lead).model_dump(mode="json"), request=request, meta={"resource": "leads"})
+    return ok(
+        data=LeadOut.model_validate(lead).model_dump(mode="json"),
+        request=request,
+        meta={"resource": "leads"},
+    )
 
 
 @router.delete("/{lead_id}", status_code=status.HTTP_200_OK)
 def soft_delete_lead(
     request: Request,
-    lead_id: str,
+    lead_id: uuid.UUID,
     db: Session = Depends(get_db),
     user=Depends(require_role({"admin"})),
 ):
@@ -109,7 +119,7 @@ def soft_delete_lead(
 @router.post("/{lead_id}/restore", status_code=status.HTTP_200_OK)
 def restore_lead(
     request: Request,
-    lead_id: str,
+    lead_id: uuid.UUID,
     db: Session = Depends(get_db),
     user=Depends(require_role({"admin"})),
 ):
@@ -119,13 +129,17 @@ def restore_lead(
         user=user,
         request=request,
     )
-    return ok(data=LeadOut.model_validate(lead).model_dump(mode="json"), request=request, meta={"resource": "leads"})
+    return ok(
+        data=LeadOut.model_validate(lead).model_dump(mode="json"),
+        request=request,
+        meta={"resource": "leads"},
+    )
 
 
 @router.post("/{lead_id}/assign", status_code=status.HTTP_200_OK)
 def assign_lead(
     request: Request,
-    lead_id: str,
+    lead_id: uuid.UUID,
     payload: AssignLeadRequest,
     db: Session = Depends(get_db),
     user=Depends(require_role({"manager", "admin"})),
@@ -137,4 +151,8 @@ def assign_lead(
         user=user,
         request=request,
     )
-    return ok(data=LeadOut.model_validate(lead).model_dump(mode="json"), request=request, meta={"resource": "leads"})
+    return ok(
+        data=LeadOut.model_validate(lead).model_dump(mode="json"),
+        request=request,
+        meta={"resource": "leads"},
+    )

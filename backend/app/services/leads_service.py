@@ -114,6 +114,7 @@ def list_leads(
     page_size: int,
     include_deleted: bool,
 ) -> tuple[List[Lead], int]:
+
     if include_deleted and user.get("role") != "admin":
         raise AppError(
             code="LEADS_INCLUDE_DELETED_FORBIDDEN",
@@ -153,7 +154,8 @@ def list_leads(
     return leads, total
 
 
-def get_lead(db: Session, lead_id: str, user: dict, include_deleted: bool) -> Lead:
+def get_lead(db: Session, lead_id: UUID, user: dict, include_deleted: bool) -> Lead:
+
     if include_deleted and user.get("role") != "admin":
         raise AppError(
             code="LEADS_INCLUDE_DELETED_FORBIDDEN",
@@ -162,6 +164,7 @@ def get_lead(db: Session, lead_id: str, user: dict, include_deleted: bool) -> Le
         )
 
     lead = db.get(Lead, lead_id)
+
     if not lead:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
@@ -169,11 +172,14 @@ def get_lead(db: Session, lead_id: str, user: dict, include_deleted: bool) -> Le
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
     _require_lead_access(user, lead)
+
     return lead
 
 
-def update_lead(db: Session, lead_id: str, payload: LeadUpdate, user: dict, request) -> Lead:
+def update_lead(db: Session, lead_id: UUID, payload: LeadUpdate, user: dict, request) -> Lead:
+
     lead = db.get(Lead, lead_id)
+
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
@@ -198,6 +204,7 @@ def update_lead(db: Session, lead_id: str, payload: LeadUpdate, user: dict, requ
         lead.last_contacted_at = payload.last_contacted_at
 
     if payload.assigned_to_user_id is not None:
+
         if role not in {"manager", "admin"}:
             raise AppError(
                 code="LEADS_FORBIDDEN",
@@ -228,17 +235,21 @@ def update_lead(db: Session, lead_id: str, payload: LeadUpdate, user: dict, requ
 
     db.commit()
     db.refresh(lead)
+
     return lead
 
 
-def soft_delete_lead(db: Session, lead_id: str, user: dict, request) -> dict:
+def soft_delete_lead(db: Session, lead_id: UUID, user: dict, request) -> dict:
+
     lead = db.get(Lead, lead_id)
+
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
     lead.is_deleted = True
     lead.deleted_at = datetime.now(timezone.utc)
     lead.updated_at = datetime.now(timezone.utc)
+
     db.add(lead)
 
     audit_event(
@@ -253,17 +264,20 @@ def soft_delete_lead(db: Session, lead_id: str, user: dict, request) -> dict:
 
     db.commit()
 
-    return {"deleted": True, "soft": True, "lead_id": lead_id}
+    return {"deleted": True, "soft": True, "lead_id": str(lead_id)}
 
 
-def restore_lead(db: Session, lead_id: str, user: dict, request) -> Lead:
+def restore_lead(db: Session, lead_id: UUID, user: dict, request) -> Lead:
+
     lead = db.get(Lead, lead_id)
+
     if not lead:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
     lead.is_deleted = False
     lead.deleted_at = None
     lead.updated_at = datetime.now(timezone.utc)
+
     db.add(lead)
 
     audit_event(
@@ -278,11 +292,14 @@ def restore_lead(db: Session, lead_id: str, user: dict, request) -> Lead:
 
     db.commit()
     db.refresh(lead)
+
     return lead
 
 
-def assign_lead(db: Session, lead_id: str, payload: AssignLeadRequest, user: dict, request) -> Lead:
+def assign_lead(db: Session, lead_id: UUID, payload: AssignLeadRequest, user: dict, request) -> Lead:
+
     lead = db.get(Lead, lead_id)
+
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
@@ -293,6 +310,7 @@ def assign_lead(db: Session, lead_id: str, payload: AssignLeadRequest, user: dic
 
     lead.assigned_to_user_id = assignee.id
     lead.updated_at = datetime.now(timezone.utc)
+
     db.add(lead)
 
     audit_event(
@@ -314,4 +332,5 @@ def assign_lead(db: Session, lead_id: str, payload: AssignLeadRequest, user: dic
 
     db.commit()
     db.refresh(lead)
+
     return lead
