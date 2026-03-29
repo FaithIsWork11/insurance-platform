@@ -4,13 +4,14 @@ from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.app_error import AppError
 from app.core.audit import audit_event
 from app.models.lead import Lead
 from app.models.user import User
+from app.repositories import lead_repository
 from app.schemas.leads import AssignLeadRequest, LeadCreate, LeadUpdate
 
 VALID_STATUSES = {"NEW", "CONTACTED", "QUALIFIED", "TRANSFERRED", "CLOSED"}
@@ -86,8 +87,7 @@ def create_lead(db: Session, payload: LeadCreate, user: dict, request) -> Lead:
         user_uuid = _normalize_uuid_value(user.get("sub"))
         lead.assigned_to_user_id = user_uuid
 
-    db.add(lead)
-    db.flush()
+    lead_repository.create(db, lead)
 
     audit_event(
         db,
@@ -103,7 +103,7 @@ def create_lead(db: Session, payload: LeadCreate, user: dict, request) -> Lead:
     )
 
     db.commit()
-    db.refresh(lead)
+    lead_repository.refresh(db, lead)
     return lead
 
 
@@ -123,32 +123,23 @@ def list_leads(
         )
 
     offset = (page - 1) * page_size
-    base_filter = []
+    filters = []
 
     role = user.get("role")
     sub = user.get("sub")
 
     if role == "agent":
         user_uuid = _normalize_uuid_value(sub)
-        base_filter.append(Lead.assigned_to_user_id == user_uuid)
+        filters.append(Lead.assigned_to_user_id == user_uuid)
 
     if not include_deleted:
-        base_filter.append(Lead.is_deleted.is_(False))
+        filters.append(Lead.is_deleted.is_(False))
 
-    total = db.execute(
-        select(func.count()).select_from(Lead).where(*base_filter)
-    ).scalar_one()
-
-    leads = (
-        db.execute(
-            select(Lead)
-            .where(*base_filter)
-            .order_by(Lead.created_at.desc())
-            .offset(offset)
-            .limit(page_size)
-        )
-        .scalars()
-        .all()
+    leads, total = lead_repository.list_with_count(
+        db,
+        filters=filters,
+        offset=offset,
+        limit=page_size,
     )
 
     return leads, total
@@ -163,13 +154,21 @@ def get_lead(db: Session, lead_id: UUID, user: dict, include_deleted: bool) -> L
             status_code=403,
         )
 
-    lead = db.get(Lead, lead_id)
+    lead = lead_repository.get_by_id(db, lead_id)
 
     if not lead:
-        raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
+        raise AppError(
+            code="LEAD_NOT_FOUND",
+            message="Lead not found",
+            status_code=404,
+        )
 
     if (not include_deleted) and lead.is_deleted:
-        raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
+        raise AppError(
+            code="LEAD_NOT_FOUND",
+            message="Lead not found",
+            status_code=404,
+        )
 
     _require_lead_access(user, lead)
 
@@ -178,7 +177,7 @@ def get_lead(db: Session, lead_id: UUID, user: dict, include_deleted: bool) -> L
 
 def update_lead(db: Session, lead_id: UUID, payload: LeadUpdate, user: dict, request) -> Lead:
 
-    lead = db.get(Lead, lead_id)
+    lead = lead_repository.get_by_id(db, lead_id)
 
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
@@ -216,7 +215,7 @@ def update_lead(db: Session, lead_id: UUID, payload: LeadUpdate, user: dict, req
         lead.assigned_to_user_id = assignee.id
 
     lead.updated_at = datetime.now(timezone.utc)
-    db.add(lead)
+    lead_repository.update(db, lead)
 
     audit_event(
         db,
@@ -234,23 +233,19 @@ def update_lead(db: Session, lead_id: UUID, payload: LeadUpdate, user: dict, req
     )
 
     db.commit()
-    db.refresh(lead)
+    lead_repository.refresh(db, lead)
 
     return lead
 
 
 def soft_delete_lead(db: Session, lead_id: UUID, user: dict, request) -> dict:
 
-    lead = db.get(Lead, lead_id)
+    lead = lead_repository.get_by_id(db, lead_id)
 
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
-    lead.is_deleted = True
-    lead.deleted_at = datetime.now(timezone.utc)
-    lead.updated_at = datetime.now(timezone.utc)
-
-    db.add(lead)
+    lead_repository.soft_delete(db, lead)
 
     audit_event(
         db,
@@ -269,16 +264,12 @@ def soft_delete_lead(db: Session, lead_id: UUID, user: dict, request) -> dict:
 
 def restore_lead(db: Session, lead_id: UUID, user: dict, request) -> Lead:
 
-    lead = db.get(Lead, lead_id)
+    lead = lead_repository.get_by_id(db, lead_id)
 
     if not lead:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
 
-    lead.is_deleted = False
-    lead.deleted_at = None
-    lead.updated_at = datetime.now(timezone.utc)
-
-    db.add(lead)
+    lead_repository.restore(db, lead)
 
     audit_event(
         db,
@@ -291,14 +282,14 @@ def restore_lead(db: Session, lead_id: UUID, user: dict, request) -> Lead:
     )
 
     db.commit()
-    db.refresh(lead)
+    lead_repository.refresh(db, lead)
 
     return lead
 
 
 def assign_lead(db: Session, lead_id: UUID, payload: AssignLeadRequest, user: dict, request) -> Lead:
 
-    lead = db.get(Lead, lead_id)
+    lead = lead_repository.get_by_id(db, lead_id)
 
     if not lead or lead.is_deleted:
         raise AppError(code="LEAD_NOT_FOUND", message="Lead not found", status_code=404)
@@ -311,7 +302,7 @@ def assign_lead(db: Session, lead_id: UUID, payload: AssignLeadRequest, user: di
     lead.assigned_to_user_id = assignee.id
     lead.updated_at = datetime.now(timezone.utc)
 
-    db.add(lead)
+    lead_repository.update(db, lead)
 
     audit_event(
         db,
@@ -331,6 +322,6 @@ def assign_lead(db: Session, lead_id: UUID, payload: AssignLeadRequest, user: di
     )
 
     db.commit()
-    db.refresh(lead)
+    lead_repository.refresh(db, lead)
 
     return lead

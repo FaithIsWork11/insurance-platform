@@ -7,6 +7,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
+from app.repositories import audit_log_repository
 
 
 def build_audit_context(request: Request) -> dict[str, Optional[str]]:
@@ -40,17 +41,10 @@ def audit_event(
     This helper does NOT commit.
     The caller controls transaction boundaries.
     """
-    actor_uuid: uuid.UUID | None = None
-    if actor_user_id is not None:
-        actor_uuid = (
-            actor_user_id
-            if isinstance(actor_user_id, uuid.UUID)
-            else uuid.UUID(str(actor_user_id))
-        )
-
-    row = AuditLog(
-        actor_user_id=actor_uuid,
+    return audit_log_repository.create_audit_log(
+        db,
         action=action,
+        actor_user_id=actor_user_id,
         entity_type=entity_type,
         entity_id=entity_id,
         request_id=request_id,
@@ -59,7 +53,3 @@ def audit_event(
         endpoint_path=endpoint_path,
         http_method=http_method,
     )
-
-    db.add(row)
-    db.flush()
-    return row

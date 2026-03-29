@@ -6,18 +6,12 @@ from app.core.app_error import AppError
 from app.core.audit import audit_event
 from app.core.passwords import hash_password
 from app.models.user import User
+from app.repositories import user_repository
 from app.schemas.users import UserCreate, ALLOWED_ROLES
 
 
 def create_user(db: Session, payload: UserCreate, actor_user: dict, request) -> User:
     actor_role = actor_user.get("role")
-
-    if actor_role == "manager" and payload.role != "agent":
-        raise AppError(
-            code="USERS_FORBIDDEN",
-            message="Managers can only create agents",
-            status_code=403,
-        )
 
     role = payload.role.strip().lower()
     if role not in ALLOWED_ROLES:
@@ -27,7 +21,14 @@ def create_user(db: Session, payload: UserCreate, actor_user: dict, request) -> 
             status_code=400,
         )
 
-    existing_username = db.query(User).filter(User.username == payload.username).first()
+    if actor_role == "manager" and role != "agent":
+        raise AppError(
+            code="USERS_FORBIDDEN",
+            message="Managers can only create agents",
+            status_code=403,
+        )
+
+    existing_username = user_repository.get_by_username(db, payload.username)
     if existing_username:
         raise AppError(
             code="USERNAME_EXISTS",
@@ -35,8 +36,9 @@ def create_user(db: Session, payload: UserCreate, actor_user: dict, request) -> 
             status_code=400,
         )
 
-    if payload.email is not None:
-        existing_email = db.query(User).filter(User.email == str(payload.email)).first()
+    email = str(payload.email) if payload.email is not None else None
+    if email is not None:
+        existing_email = user_repository.get_by_email(db, email)
         if existing_email:
             raise AppError(
                 code="EMAIL_EXISTS",
@@ -44,16 +46,14 @@ def create_user(db: Session, payload: UserCreate, actor_user: dict, request) -> 
                 status_code=400,
             )
 
-    user_obj = User(
+    user_obj = user_repository.create(
+        db,
         username=payload.username,
-        email=str(payload.email) if payload.email is not None else None,
+        email=email,
         password_hash=hash_password(payload.password),
         role=role,
         is_active=True,
     )
-
-    db.add(user_obj)
-    db.flush()
 
     audit_event(
         db,
@@ -70,23 +70,16 @@ def create_user(db: Session, payload: UserCreate, actor_user: dict, request) -> 
     )
 
     db.commit()
-    db.refresh(user_obj)
+    user_repository.refresh(db, user_obj)
     return user_obj
 
 
 def list_users(db: Session, limit: int = 50, offset: int = 0) -> list[User]:
-    users = (
-        db.query(User)
-        .order_by(User.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-    return users
+    return user_repository.list_users(db, limit=limit, offset=offset)
 
 
 def get_user_by_id(db: Session, user_id: str) -> User:
-    user_obj = db.query(User).filter(User.id == user_id).first()
+    user_obj = user_repository.get_by_id(db, user_id)
     if not user_obj:
         raise AppError(
             code="USER_NOT_FOUND",
@@ -99,7 +92,7 @@ def get_user_by_id(db: Session, user_id: str) -> User:
 def disable_user(db: Session, user_id: str, actor_user: dict, request) -> User:
     user_obj = get_user_by_id(db, user_id)
 
-    user_obj.is_active = False
+    user_repository.set_active_status(db, user_obj, False)
 
     audit_event(
         db,
@@ -114,14 +107,14 @@ def disable_user(db: Session, user_id: str, actor_user: dict, request) -> User:
     )
 
     db.commit()
-    db.refresh(user_obj)
+    user_repository.refresh(db, user_obj)
     return user_obj
 
 
 def enable_user(db: Session, user_id: str, actor_user: dict, request) -> User:
     user_obj = get_user_by_id(db, user_id)
 
-    user_obj.is_active = True
+    user_repository.set_active_status(db, user_obj, True)
 
     audit_event(
         db,
@@ -136,5 +129,5 @@ def enable_user(db: Session, user_id: str, actor_user: dict, request) -> User:
     )
 
     db.commit()
-    db.refresh(user_obj)
+    user_repository.refresh(db, user_obj)
     return user_obj
